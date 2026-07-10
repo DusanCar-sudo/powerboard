@@ -102,6 +102,22 @@ int main() {
         globe_points.push_back({sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi)});
     }
 
+    struct GlobeConnection {
+        size_t i, j;
+    };
+    vector<GlobeConnection> globe_connections;
+    for (size_t i = 0; i < globe_points.size(); ++i) {
+        for (size_t j = i + 1; j < globe_points.size(); ++j) {
+            double dx = globe_points[i].x - globe_points[j].x;
+            double dy = globe_points[i].y - globe_points[j].y;
+            double dz = globe_points[i].z - globe_points[j].z;
+            double dist = sqrt(dx*dx + dy*dy + dz*dz);
+            if (dist < 0.28) {
+                globe_connections.push_back({i, j});
+            }
+        }
+    }
+
     double globe_angle_y = 0.0;
     double globe_angle_x = 0.0;
 
@@ -278,6 +294,50 @@ int main() {
                     return true;
                 }
 
+                if (event == Event::Return && selected_ai_menu >= 3) {
+                    string system_prompt;
+                    string user_prompt;
+
+                    string clip_text;
+                    {
+                        std::lock_guard<std::mutex> lk(vault_mutex);
+                        auto clips = get_clips(vault_db);
+                        if (selected_vault_idx < static_cast<int>(clips.size())) {
+                            clip_text = clips[selected_vault_idx].content;
+                        }
+                    }
+
+                    if (selected_ai_menu == 3 || selected_ai_menu == 4) {
+                        system_prompt = "You are a helpful AI Linux coding copilot named Aura AI. Answer the user's question directly, clearly, and concisely in a technical cyberpunk tone.";
+                        user_prompt = custom_question;
+                        if (!clip_text.empty()) {
+                            user_prompt += "\n\nContext Clipboard Text:\n" + clip_text;
+                        }
+                    } else if (selected_ai_menu == 5) {
+                        system_prompt = "Summarize the following text concisely. Provide a bulleted list of key takeaways, and a one-sentence overview.";
+                        user_prompt = clip_text;
+                    } else if (selected_ai_menu == 6) {
+                        system_prompt = "You are an expert software security and performance auditor. Analyze the following source code clip. Identify potential performance improvements, security concerns, or logic errors, and output extremely clean improved code.";
+                        user_prompt = clip_text;
+                    } else if (selected_ai_menu == 7) {
+                        system_prompt = "Translate the following text. If it is in Serbian (Cyrillic or Latin), translate it to English. If it is in English, translate it to Serbian Cyrillic. Maintain a high-quality, professional, contextually appropriate translation.";
+                        user_prompt = clip_text;
+                    }
+
+                    if (!user_prompt.empty()) {
+                        ai_thinking = true;
+                        ai_response_text = "Thinking...";
+                        screen.PostEvent(Event::Custom);
+
+                        bg_threads.emplace_back([&ai_config, system_prompt, user_prompt, &ai_response_text, &ai_thinking, &screen]() {
+                            ai_response_text = run_ai_query(ai_config, system_prompt, user_prompt);
+                            ai_thinking = false;
+                            screen.PostEvent(Event::Custom);
+                        });
+                    }
+                    return true;
+                }
+
                 if (selected_ai_menu == 0) {
                     if (event == Event::Return || input == " ") {
                         if (ai_config.provider == "Ollama") ai_config.provider = "OpenAI";
@@ -322,49 +382,6 @@ int main() {
                         custom_question += input;
                         return true;
                     }
-                }
-                else if (event == Event::Return) {
-                    string system_prompt;
-                    string user_prompt;
-
-                    string clip_text;
-                    {
-                        std::lock_guard<std::mutex> lk(vault_mutex);
-                        auto clips = get_clips(vault_db);
-                        if (selected_vault_idx < static_cast<int>(clips.size())) {
-                            clip_text = clips[selected_vault_idx].content;
-                        }
-                    }
-
-                    if (selected_ai_menu == 4) {
-                        system_prompt = "You are a helpful AI Linux coding copilot named Aura AI. Answer the user's question directly, clearly, and concisely in a technical cyberpunk tone.";
-                        user_prompt = custom_question;
-                        if (!clip_text.empty()) {
-                            user_prompt += "\n\nContext Clipboard Text:\n" + clip_text;
-                        }
-                    } else if (selected_ai_menu == 5) {
-                        system_prompt = "Summarize the following text concisely. Provide a bulleted list of key takeaways, and a one-sentence overview.";
-                        user_prompt = clip_text;
-                    } else if (selected_ai_menu == 6) {
-                        system_prompt = "You are an expert software security and performance auditor. Analyze the following source code clip. Identify potential performance improvements, security concerns, or logic errors, and output extremely clean improved code.";
-                        user_prompt = clip_text;
-                    } else if (selected_ai_menu == 7) {
-                        system_prompt = "Translate the following text. If it is in Serbian (Cyrillic or Latin), translate it to English. If it is in English, translate it to Serbian Cyrillic. Maintain a high-quality, professional, contextually appropriate translation.";
-                        user_prompt = clip_text;
-                    }
-
-                    if (!user_prompt.empty()) {
-                        ai_thinking = true;
-                        ai_response_text = "Thinking...";
-                        screen.PostEvent(Event::Custom);
-
-                        bg_threads.emplace_back([&ai_config, system_prompt, user_prompt, &ai_response_text, &ai_thinking, &screen]() {
-                            ai_response_text = run_ai_query(ai_config, system_prompt, user_prompt);
-                            ai_thinking = false;
-                            screen.PostEvent(Event::Custom);
-                        });
-                    }
-                    return true;
                 }
             }
         }
@@ -422,22 +439,27 @@ int main() {
                 graph.gpu_load_history.push_back(metrics.gpu_load);
                 if (graph.gpu_load_history.size() > graph.max_size) graph.gpu_load_history.erase(graph.gpu_load_history.begin());
 
-                // Increment globe spinning physics matrix
                 globe_angle_y += 0.04;
                 globe_angle_x += 0.02;
 
                 temp_metrics = metrics;
             }
 
+            // High-Performance Clipboard Polling: Only poll Wayland wl-paste when on Clipboard Vault Tab (Tab 3)
+            // to avoid system-wide context-menu closes and display-server grab interrupts.
             static int clipboard_poll_counter = 0;
-            if (++clipboard_poll_counter >= 5) {
-                clipboard_poll_counter = 0;
-                string clip = read_clipboard();
-                if (!clip.empty() && clip != last_seen_clip) {
-                    last_seen_clip = clip;
-                    std::lock_guard<std::mutex> lock(vault_mutex);
-                    add_clip(vault_db, clip);
+            if (current_tab == 3) {
+                if (++clipboard_poll_counter >= 20) { // Poll every 2.0 seconds when actively on the Vault Tab
+                    clipboard_poll_counter = 0;
+                    string clip = read_clipboard();
+                    if (!clip.empty() && clip != last_seen_clip) {
+                        last_seen_clip = clip;
+                        std::lock_guard<std::mutex> lock(vault_mutex);
+                        add_clip(vault_db, clip);
+                    }
                 }
+            } else {
+                clipboard_poll_counter = 0;
             }
 
             if (chrono::duration_cast<chrono::seconds>(current_time - last_log_time).count() >= 5) {
@@ -459,7 +481,7 @@ int main() {
         vector<double> local_ram_history;
         vector<double> local_net_download_history;
         vector<double> local_gpu_load_history;
-        double local_globe_angle_y, local_globe_angle_x;
+        double local_globe_angle_y = 0.0, local_globe_angle_x = 0.0;
         {
             std::lock_guard<std::mutex> lock(metrics_mutex);
             local_metrics = metrics;
@@ -521,7 +543,7 @@ int main() {
             return ::L(en, sr, current_theme);
         };
 
-        // --- SIDEBAR WIDGETS (Rotating globe + resume details) ---
+        // --- SIDEBAR WIDGETS (Fast Main-Thread Pre-Calculated Globe Projection) ---
         int g_size = 56;
         globe_canvas = Canvas(g_size, g_size);
         double r_globe = g_size / 2.3;
@@ -532,34 +554,29 @@ int main() {
         double cos_x = cos(local_globe_angle_x);
         double sin_x = sin(local_globe_angle_x);
 
-        // Draw spinning 3D network connections (mesh) on the globe
-        for (size_t i = 0; i < globe_points.size(); ++i) {
-            for (size_t j = i + 1; j < globe_points.size(); ++j) {
-                double dx = globe_points[i].x - globe_points[j].x;
-                double dy = globe_points[i].y - globe_points[j].y;
-                double dz = globe_points[i].z - globe_points[j].z;
-                double dist = sqrt(dx*dx + dy*dy + dz*dz);
-                if (dist < 0.28) {
-                    double xi = globe_points[i].x * cos_y - globe_points[i].z * sin_y;
-                    double zi = globe_points[i].x * sin_y + globe_points[i].z * cos_y;
-                    double yi = globe_points[i].y * cos_x - zi * sin_x;
-                    double zzi = globe_points[i].y * sin_x + zi * cos_x;
+        // Draw spinning 3D network connections using pre-calculated static connections
+        for (const auto& conn : globe_connections) {
+            size_t i = conn.i;
+            size_t j = conn.j;
+            double xi = globe_points[i].x * cos_y - globe_points[i].z * sin_y;
+            double zi = globe_points[i].x * sin_y + globe_points[i].z * cos_y;
+            double yi = globe_points[i].y * cos_x - zi * sin_x;
+            double zzi = globe_points[i].y * sin_x + zi * cos_x;
 
-                    double xj = globe_points[j].x * cos_y - globe_points[j].z * sin_y;
-                    double zj = globe_points[j].x * sin_y + globe_points[j].z * cos_y;
-                    double yj = globe_points[j].y * cos_x - zj * sin_x;
-                    double zzj = globe_points[j].y * sin_x + zj * cos_x;
+            double xj = globe_points[j].x * cos_y - globe_points[j].z * sin_y;
+            double zj = globe_points[j].x * sin_y + globe_points[j].z * cos_y;
+            double yj = globe_points[j].y * cos_x - zj * sin_x;
+            double zzj = globe_points[j].y * sin_x + zj * cos_x;
 
-                    int sxi = static_cast<int>(cx_g + xi * r_globe);
-                    int syi = static_cast<int>(cy_g + yi * r_globe);
-                    int sxj = static_cast<int>(cx_g + xj * r_globe);
-                    int syj = static_cast<int>(cy_g + yj * r_globe);
+            int sxi = static_cast<int>(cx_g + xi * r_globe);
+            int syi = static_cast<int>(cy_g + yi * r_globe);
+            int sxj = static_cast<int>(cx_g + xj * r_globe);
+            int syj = static_cast<int>(cy_g + yj * r_globe);
 
-                    Color col_mesh = (zzi > 0 && zzj > 0) ? primary_color : Color::GrayDark;
-                    globe_canvas.DrawPointLine(sxi, syi, sxj, syj, col_mesh);
-                }
-            }
+            Color col_mesh = (zzi > 0 && zzj > 0) ? primary_color : Color::GrayDark;
+            globe_canvas.DrawPointLine(sxi, syi, sxj, syj, col_mesh);
         }
+
         // Draw globe dots
         for (const auto& pt : globe_points) {
             double x1 = pt.x * cos_y - pt.z * sin_y;
@@ -733,16 +750,48 @@ int main() {
             canvas(&power_canvas) | size(HEIGHT, EQUAL, 8)
         })) | color(border_color) | flex;
 
-        // 4. THERMALS Box (Circular Gauges)
+        // 4. THERMALS Box (Historical Line/Wavegraph)
         thermals_canvas = Canvas(mem_w_px, 32);
-        int cx1 = static_cast<int>(mem_w_px * 0.18);
-        int cx2 = static_cast<int>(mem_w_px * 0.50);
-        int cx3 = static_cast<int>(mem_w_px * 0.82);
-        int cy_c = 16;
-        int r_c = 8;
-        draw_arc(thermals_canvas, cx1, cy_c, r_c, local_metrics.cpu_temp, Color::Red);
-        draw_arc(thermals_canvas, cx2, cy_c, r_c, local_metrics.gpu_temp, Color::Orange1);
-        draw_arc(thermals_canvas, cx3, cy_c, r_c, local_metrics.battery_percent, Color::Green);
+        if (local_cpu_temp_history.size() > 1) {
+            for (size_t i = 1; i < local_cpu_temp_history.size(); ++i) {
+                int x1 = static_cast<int>((static_cast<double>(i - 1) / (graph.max_size - 1)) * (mem_w_px - 1));
+                int x2 = static_cast<int>((static_cast<double>(i) / (graph.max_size - 1)) * (mem_w_px - 1));
+                int max_y = 32 - 4;
+                int y1 = static_cast<int>((local_cpu_temp_history[i - 1] / 100.0) * max_y);
+                int y2 = static_cast<int>((local_cpu_temp_history[i] / 100.0) * max_y);
+                for (int x = x1; x <= x2; ++x) {
+                    double t = (x2 == x1) ? 0.0 : static_cast<double>(x - x1) / (x2 - x1);
+                    int y = static_cast<int>(y1 + t * (y2 - y1));
+                    for (int curr_y = 0; curr_y <= y; ++curr_y) {
+                        thermals_canvas.DrawPoint(x, (32 - 2) - curr_y, true, Color::Red);
+                    }
+                }
+            }
+        }
+
+        if (local_gpu_temp_history.size() > 1) {
+            for (size_t i = 1; i < local_gpu_temp_history.size(); ++i) {
+                int x1 = static_cast<int>((static_cast<double>(i - 1) / (graph.max_size - 1)) * (mem_w_px - 1));
+                int x2 = static_cast<int>((static_cast<double>(i) / (graph.max_size - 1)) * (mem_w_px - 1));
+                int max_y = 32 - 4;
+                int y1 = static_cast<int>((local_gpu_temp_history[i - 1] / 100.0) * max_y);
+                int y2 = static_cast<int>((local_gpu_temp_history[i] / 100.0) * max_y);
+                
+                int lx = -1, ly = -1;
+                for (int x = x1; x <= x2; ++x) {
+                    double t = (x2 == x1) ? 0.0 : static_cast<double>(x - x1) / (x2 - x1);
+                    int y = static_cast<int>(y1 + t * (y2 - y1));
+                    int sy = (32 - 2) - y;
+                    if (lx != -1) {
+                        thermals_canvas.DrawPointLine(lx, ly, x, sy, Color::Orange1);
+                    } else {
+                        thermals_canvas.DrawPoint(x, sy, true, Color::Orange1);
+                    }
+                    lx = x;
+                    ly = sy;
+                }
+            }
+        }
 
         auto thermals_box = window(text("  " + L("THERMALS", "ТЕМПЕРАТУРЕ") + "  ") | bold, vbox({
             hbox({
@@ -756,19 +805,20 @@ int main() {
 
         // 5. NETWORK LINK Box
         int col3_w_px = (right_w / 3) * 2;
-        network_canvas = Canvas(col3_w_px, curve_h_px);
+        int net_h_px = 24; // 6 character rows * 4 dots
+        network_canvas = Canvas(col3_w_px, net_h_px);
         if (local_net_download_history.size() > 1) {
             for (size_t i = 1; i < local_net_download_history.size(); ++i) {
                 int x1 = static_cast<int>((static_cast<double>(i - 1) / (graph.max_size - 1)) * (col3_w_px - 1));
                 int x2 = static_cast<int>((static_cast<double>(i) / (graph.max_size - 1)) * (col3_w_px - 1));
-                int max_y = curve_h_px - 4;
+                int max_y = net_h_px - 4;
                 int y1 = static_cast<int>((local_net_download_history[i - 1] / 100.0) * max_y);
                 int y2 = static_cast<int>((local_net_download_history[i] / 100.0) * max_y);
                 for (int x = x1; x <= x2; ++x) {
                     double t = (x2 == x1) ? 0.0 : static_cast<double>(x - x1) / (x2 - x1);
                     int y = static_cast<int>(y1 + t * (y2 - y1));
                     for (int curr_y = 0; curr_y <= y; ++curr_y) {
-                        network_canvas.DrawPoint(x, (curve_h_px - 2) - curr_y, true, secondary_color);
+                        network_canvas.DrawPoint(x, (net_h_px - 2) - curr_y, true, secondary_color);
                     }
                 }
             }
@@ -811,21 +861,46 @@ int main() {
             vbox(move(drive_progress_rows))
         })) | color(border_color) | flex;
 
-        // 7. GPU CORE Box
-        gpu_canvas = Canvas(col3_w_px, curve_h_px);
-        if (local_gpu_load_history.size() > 1) {
-            for (size_t i = 1; i < local_gpu_load_history.size(); ++i) {
+        // 7. GPU CORE Box (CPU Load & GPU Load overlaid comparison)
+        int gpu_h_px = 24; // 6 character rows * 4 dots
+        gpu_canvas = Canvas(col3_w_px, gpu_h_px);
+        if (local_cpu_load_history.size() > 1) {
+            for (size_t i = 1; i < local_cpu_load_history.size(); ++i) {
                 int x1 = static_cast<int>((static_cast<double>(i - 1) / (graph.max_size - 1)) * (col3_w_px - 1));
                 int x2 = static_cast<int>((static_cast<double>(i) / (graph.max_size - 1)) * (col3_w_px - 1));
-                int max_y = curve_h_px - 4;
-                int y1 = static_cast<int>((local_gpu_load_history[i - 1] / 100.0) * max_y);
-                int y2 = static_cast<int>((local_gpu_load_history[i] / 100.0) * max_y);
+                int max_y = gpu_h_px - 4;
+                int y1 = static_cast<int>((local_cpu_load_history[i - 1] / 100.0) * max_y);
+                int y2 = static_cast<int>((local_cpu_load_history[i] / 100.0) * max_y);
                 for (int x = x1; x <= x2; ++x) {
                     double t = (x2 == x1) ? 0.0 : static_cast<double>(x - x1) / (x2 - x1);
                     int y = static_cast<int>(y1 + t * (y2 - y1));
                     for (int curr_y = 0; curr_y <= y; ++curr_y) {
-                        gpu_canvas.DrawPoint(x, (curve_h_px - 2) - curr_y, true, Color::Purple);
+                        gpu_canvas.DrawPoint(x, (gpu_h_px - 2) - curr_y, true, Color::RGB(10, 30, 80));
                     }
+                }
+            }
+        }
+
+        if (local_gpu_load_history.size() > 1) {
+            for (size_t i = 1; i < local_gpu_load_history.size(); ++i) {
+                int x1 = static_cast<int>((static_cast<double>(i - 1) / (graph.max_size - 1)) * (col3_w_px - 1));
+                int x2 = static_cast<int>((static_cast<double>(i) / (graph.max_size - 1)) * (col3_w_px - 1));
+                int max_y = gpu_h_px - 4;
+                int y1 = static_cast<int>((local_gpu_load_history[i - 1] / 100.0) * max_y);
+                int y2 = static_cast<int>((local_gpu_load_history[i] / 100.0) * max_y);
+                
+                int lx = -1, ly = -1;
+                for (int x = x1; x <= x2; ++x) {
+                    double t = (x2 == x1) ? 0.0 : static_cast<double>(x - x1) / (x2 - x1);
+                    int y = static_cast<int>(y1 + t * (y2 - y1));
+                    int sy = (gpu_h_px - 2) - y;
+                    if (lx != -1) {
+                        gpu_canvas.DrawPointLine(lx, ly, x, sy, Color::Purple);
+                    } else {
+                        gpu_canvas.DrawPoint(x, sy, true, Color::Purple);
+                    }
+                    lx = x;
+                    ly = sy;
                 }
             }
         }
