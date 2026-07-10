@@ -1,0 +1,25 @@
+Act as an expert C++ developer specializing in terminal user interfaces (TUIs) and low-level system monitoring. 
+
+Write a complete, highly optimized C++ terminal application that monitors system resources in the visual style of btop++ (using Braille patterns, Unicode box-drawing characters like '│', '─', '┌', '┐', and a dark terminal color palette).
+
+### 1. Functional Requirements:
+- **CPU Monitoring:** Real-time percentage load and temperature (°C).
+- **GPU Monitoring:** Real-time percentage load, temperature (°C), and current power consumption in Watts (W).
+- **Power & Cost Tracking:** 
+  - Calculate real-time Wattage (W).
+  - Calculate Cumulative Kilowatt-hours (kWh) consumed since runtime/billing cycle start.
+  - Calculate dynamic cost based on a fixed rate of $0.15 USD per kWh.
+- **Persistent Data Logging:** Log total W and kWh to a local file (e.g., CSV or SQLite) structured to aggregate usage on a monthly level.
+
+### 2. Layout & UI Components (btop++ Style):
+- **Box 1 (Hardware Monitor):** Text readouts and small text-based sparklines for CPU and GPU metrics.
+- **Box 2 (Power Analytics Graph):** A dedicated, large separate canvas displaying a scrolling real-time graphical history of W, cumulative kWh, and accumulated financial cost.
+- **Command Overlay:** A footer or sidebar displaying help commands:
+  - `:help` — Show all commands.
+  - `:graph` — Toggle or switch views focus to the power graph.
+
+### 3. Technical Constraints:
+- Use standard C++20 or C++17.
+- Utilize a lightweight terminal abstraction library like `ncurses` or `ftxui` to handle the grid layout and non-blocking input smoothly.
+- Ensure cross-platform architecture abstractions (or specify if it relies on Linux `/proc` / `sysfs` or Windows APIs for retrieving CPU/GPU data).
+- The code must compile cleanly, handle the math for kWh conversion continuously over time ($kWh = \frac{Watts \times \Delta t_{hours}}{1000}$), and use a non-blocking input thread for console commands.

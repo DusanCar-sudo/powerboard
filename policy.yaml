@@ -1,0 +1,6 @@
+name: projects/aura-code-501012/policies/gcp.resourceLocations
+spec:
+  rules:
+  - values:
+      allowedValues:
+      - in:us-locations
