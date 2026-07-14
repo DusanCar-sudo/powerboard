@@ -1,130 +1,84 @@
-# powerboard
+# Powerboard
 
-> C++20 terminal GPU power monitor with full system telemetry — btop++ style.
+**C++20 terminal GPU power monitor with full system telemetry — btop++ style.**
+
+Real-time hardware monitor for Linux. Samples GPU power consumption, CPU load & temp, RAM usage, disk usage, and system uptime every 100 ms, renders everything at smooth 60 FPS in your terminal.
+
+Built by Dušan Milosavljević (Lean Progress IQ). The terminal counterpart to Aura Pulse — same telemetry, different rendering pipeline.
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 ![C++](https://img.shields.io/badge/C%2B%2B-20-purple)
 ![FTXUI](https://img.shields.io/badge/UI-FTXUI-orange)
+![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
 
-Powerboard is a real-time hardware monitor for Linux. It samples **GPU power consumption**, **CPU load & temp**, **RAM usage**, **disk usage**, and **system uptime** every 100 ms, and renders everything at smooth 60 FPS in your terminal.
+## Why
+
+Aura Pulse gives you a windowed dashboard. Powerboard gives you the same data in your terminal — perfect for SSH sessions, servers, and headless boxes where no GUI exists.
 
 ## Features
 
-- ⚡ **GPU power tracking** — reads NVIDIA/AMD power sensors via sysfs, integrates cumulative kWh and cost
-- 💻 **CPU** — load % and temperature (coretemp/k10temp/zenpower)
-- 🎮 **GPU** — load %, temperature, and power draw
-- 🧠 **RAM** — used / total GB with live sparkline
-- 💾 **Disk** — used / total GB for root (`/`) with live sparkline
-- ⏱ **Uptime** — days, hours, minutes, seconds
-- 📈 **Braille power graph** — overlapping traces for W, kWh, and cost over the last 5 minutes
-- 💾 **CSV logging** — auto-rotating monthly files for historical analysis
-- ⌨️ **Vim-like command bar** — `:q`, `:help`, `:graph`
+- **GPU power tracking** — reads NVIDIA/AMD power sensors via sysfs, integrates cumulative kWh and cost
+- **CPU monitoring** — load %, temperature (coretemp/k10temp/zenpower)
+- **GPU monitoring** — load %, temperature, power draw
+- **RAM tracking** — used / total GB with live sparkline
+- **Disk usage** — used / total GB for root (`/`) with live sparkline
+- **Uptime counter** — days, hours, minutes, seconds
+- **Braille power graph** — overlapping traces for W, kWh, and cost over the last 5 minutes
+- **CSV logging** — auto-rotating monthly files for historical analysis
+- **Vim-like command bar** — `:q`, `:help`, `:graph`
+- **60 FPS FTXUI rendering** — smooth, no flicker, low CPU
+- **SQLite telemetry store** — for trend analysis
 
-## Screenshots
+## Quick Start
 
-### Diagnostics Dashboard
+### Requirements
 
-![Diagnostics](assets/diagnostics.png)
-
-### Benchmarks
-
-![Benchmarks](assets/benchmarks.png)
-
-### Vault & AI Enrichment
-
-![Vault & AI](assets/vault.png)
-
-
-
-## Installation
-
-### Prerequisites
-
-- Linux with `sysfs` (`/sys/class/hwmon`, `/sys/class/drm`, `/proc/stat`)
-- C++20 compiler (GCC 11+ or Clang 14+)
-- [vcpkg](https://github.com/microsoft/vcpkg) (C++ package manager)
-- CMake 3.22+
+- Linux
+- CMake ≥ 3.22
+- C++20 compiler (GCC 10+ or Clang 12+)
+- [vcpkg](https://vcpkg.io) for dependencies
+- ftxui (installed via vcpkg)
+- SQLite3
 
 ### Build
 
 ```bash
-# Clone
-git clone https://github.com/milodule3-debug/powerboard.git
-cd powerboard
-
-# Configure with vcpkg
-mkdir build && cd build
-cmake .. -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
-
-# Build
-make -j$(nproc)
+cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg.cmake
+cmake --build build -j$(nproc)
 
 # Run
-./powerboard
+./build/powerboard
 ```
 
-## Usage
+## Screenshots
 
-Run directly in a terminal:
-
-```bash
-./powerboard
-```
-
-### Commands
-
-| Key / Command | Action |
-|--------------|--------|
-| `:q` or `:quit` | Exit powerboard |
-| `:help` | Show help overlay |
-| `:graph` | Toggle graph size (large / normal) |
-| `Esc` | Exit help / cancel command / shrink graph |
-| `q` | Quick quit (normal mode) |
-
-### Data logging
-
-Powerboard automatically writes CSV logs to `./powerboard_YYYY-MM.csv`:
-
-```
-timestamp,power_w,cumulative_kwh,cost_usd
-2026-07-10T12:58:49,11.042,3.82076e-05,5.73114e-06
-```
-
-Files rotate monthly.
+Screenshots of diagnostics, benchmarks, and vault/AI views in `assets/`.
 
 ## Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│  Sampler    │────▶│  Metrics     │◀────│  UI Render  │
-│  (100 Hz)   │     │  (mutex)     │     │  (60 FPS)   │
-└─────────────┘     └──────────────┘     └─────────────┘
-       │                                        │
-       ▼                                        ▼
-  /proc/stat                                 FTXUI
-  /sys/class/hwmon                     Fullscreen TUI
-  /sys/class/drm
-  /proc/meminfo
-  statvfs("/")
-```
+- `src/main.cpp` — entry point, render loop
+- `src/ai.h` — AI inference hooks
+- `src/benchmarks.h` — hardware benchmark routines
+- `src/clipboard.h` — clipboard integration
+- `src/datalogger.h` — CSV logger + SQLite writer
+- `src/scanner.h` — sysfs / hwmon scanner
+- `src/types.h` — common data types
+- `src/utils.h` — helpers
+- `policy.yaml` — runtime configuration
+- `C++rules.txt` — coding style guide
 
-- **Thread 1**: Hardware sampler — reads sysfs/procfs every 100 ms
-- **Thread 2**: UI refresh — posts to FTXUI every ~16 ms for smooth rendering
-- **Thread 3**: CSV logger — writes to disk every 10 s
+## Tech Stack
 
-## Metrics
-
-| Metric | Source | Resolution |
-|--------|--------|------------|
-| CPU load | `/proc/stat` (delta) | 0.01% |
-| CPU temp | `hwmon` (coretemp/k10temp) | 0.5°C |
-| GPU load | DRM `gpu_busy_percent` | 0.1% |
-| GPU temp | GPU hwmon | 0.5°C |
-| GPU power | GPU hwmon `power1_average` | 1 µW |
-| RAM | `/proc/meminfo` | 1 KB |
-| Disk | `statvfs("/")` | 1 B |
-| Uptime | `/proc/uptime` | 0.01 s |
+- C++20
+- FTXUI (terminal UI framework)
+- SQLite 3 (telemetry persistence)
+- vcpkg (dependency management)
+- CMake (build system)
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+## Author
+
+Built by **Dušan Milosavljević** — see [OWNERSHIP.md](OWNERSHIP.md).
