@@ -12,6 +12,7 @@ struct ProcessInfo {
 
 struct DriveInfo {
     std::string mount_point;
+    std::string label;  // short display name; falls back to mount_point when empty
     unsigned long long total_gb = 0;
     unsigned long long used_gb = 0;
     double percent_used = 0.0;
@@ -37,6 +38,9 @@ struct SystemMetrics {
 
     double battery_percent = 100.0;
     std::string uptime_str = "0h 0m";
+    std::string cpu_model = "Unknown CPU";
+    std::string loadavg_str = "0.00 / 0.00";
+    int proc_count = 0;
 
     std::vector<ProcessInfo> processes;
     std::vector<double> core_loads;
@@ -50,6 +54,7 @@ struct GraphData {
     std::vector<double> gpu_temp_history;
     std::vector<double> ram_history;
     std::vector<double> net_download_history;
+    std::vector<double> net_upload_history;
     std::vector<double> gpu_load_history;
     const size_t max_size = 120;
 };

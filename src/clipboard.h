@@ -4,17 +4,85 @@
 #include <mutex>
 #include <cstdio>
 #include <sqlite3.h>
+#include <chrono>
+#include <thread>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/wait.h>
 #include "types.h"
 
+// Thread-safe clipboard read with timeout to prevent Wayland hangs
 inline std::string read_clipboard() {
-    std::string result;
-    FILE* pipe = popen("wl-paste -n 2>/dev/null", "r");
-    if (!pipe) return "";
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        result += buffer;
+    int pipefd[2];
+    if (pipe(pipefd) == -1) return "";
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return "";
     }
-    pclose(pipe);
+
+    if (pid == 0) {  // Child process
+        close(pipefd[0]);  // Close read end
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        // Set stdin to /dev/null
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
+        }
+
+        execlp("wl-paste", "wl-paste", "-n", "2>/dev/null", nullptr);
+        _exit(1);  // If exec fails
+    }
+
+    // Parent process
+    close(pipefd[1]);  // Close write end
+
+    std::string result;
+    char buffer[256];
+    ssize_t bytes_read;
+    auto start_time = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::milliseconds(500);  // 500ms timeout
+
+    // Make read end non-blocking
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+    while (true) {
+        auto elapsed = std::chrono::steady_clock::now() - start_time;
+        if (elapsed > timeout) {
+            kill(pid, SIGKILL);
+            break;
+        }
+
+        bytes_read = read(pipefd[0], buffer, sizeof(buffer) - 1);
+        if (bytes_read > 0) {
+            buffer[bytes_read] = '\0';
+            result += buffer;
+        } else if (bytes_read == 0) {
+            break;  // EOF
+        } else {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            } else {
+                break;  // Error
+            }
+        }
+    }
+
+    close(pipefd[0]);
+
+    // Wait for child with timeout
+    int status;
+    waitpid(pid, &status, WNOHANG);  // Non-blocking wait
+    kill(pid, SIGKILL);  // Ensure cleanup
+    waitpid(pid, &status, 0);  // Final cleanup
+
     return result;
 }
 

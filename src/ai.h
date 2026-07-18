@@ -5,6 +5,7 @@
 #include <cstdio>
 #include "types.h"
 #include "utils.h"
+#include "tokens.h"
 
 namespace fs = std::filesystem;
 
@@ -58,7 +59,8 @@ inline std::string run_ai_query(const AIConfig& config, const std::string& syste
 
     if (config.provider == "Ollama") {
         url = config.api_url.empty() ? "http://localhost:11434/api/chat" : config.api_url;
-        payload = "{\"model\":\"" + config.model + "\",\"messages\":[{\"role\":\"system\",\"content\":\"" + escaped_sys + "\"},{\"role\":\"user\",\"content\":\"" + escaped_user + "\"}],\"stream\":false}";
+        // keep_alive holds the model in RAM so follow-up queries skip the slow cold load
+        payload = "{\"model\":\"" + config.model + "\",\"messages\":[{\"role\":\"system\",\"content\":\"" + escaped_sys + "\"},{\"role\":\"user\",\"content\":\"" + escaped_user + "\"}],\"stream\":false,\"keep_alive\":\"30m\"}";
         parse_script = "import sys, json; print(json.load(sys.stdin)['message']['content'])";
     }
     else if (config.provider == "Gemini") {
@@ -94,7 +96,8 @@ inline std::string run_ai_query(const AIConfig& config, const std::string& syste
     f << payload;
     f.close();
 
-    std::string cmd = "curl -s -m 30 " + headers + "-d @" + temp_payload_path + " \"" + url + "\" | python3 -c \"" + parse_script + "\" 2>&1";
+    std::string raw_response_path = home + "/.local/share/powerboard/last_response.json";
+    std::string cmd = "curl -s -m 180 " + headers + "-d @" + temp_payload_path + " \"" + url + "\" | tee \"" + raw_response_path + "\" | python3 -c \"" + parse_script + "\" 2>&1";
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) {
         fs::remove(temp_payload_path);
@@ -106,11 +109,29 @@ inline std::string run_ai_query(const AIConfig& config, const std::string& syste
     while (fgets(buf, sizeof(buf), pipe)) res += buf;
     pclose(pipe);
 
+    if (res.find("Traceback") != std::string::npos || res.find("KeyError") != std::string::npos) {
+        // Surface the server's actual reply (e.g. {"error": "model not found"})
+        std::string raw;
+        std::ifstream rf(raw_response_path);
+        if (rf.is_open()) {
+            char buf2[512];
+            rf.read(buf2, sizeof(buf2) - 1);
+            buf2[rf.gcount()] = '\0';
+            raw = buf2;
+        }
+        fs::remove(temp_payload_path);
+        if (raw.empty()) {
+            return "AI Error: no response from server (network down or URL unreachable).\nProvider: " + config.provider + "\nURL: " + url;
+        }
+        return "AI Error: could not parse server reply.\nProvider: " + config.provider + "\nServer said:\n" + raw;
+    }
     fs::remove(temp_payload_path);
 
-    if (res.find("Traceback") != std::string::npos || res.find("KeyError") != std::string::npos) {
-        return "AI Error: Failed to parse response or model is unreachable.\nCheck your API Key, settings, and network connection.";
-    }
+    // Track token usage
+    extern TokenStats g_token_stats;
+    int64_t prompt_tokens = g_token_stats.estimate_tokens(system_prompt + user_prompt);
+    int64_t completion_tokens = g_token_stats.estimate_tokens(res);
+    g_token_stats.record_query(prompt_tokens, completion_tokens);
 
     return res;
 }

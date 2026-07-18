@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <chrono>
 #include <mutex>
+#include <ctime>
 
 class DataLogger {
 public:
@@ -21,7 +22,8 @@ public:
 
         auto now     = std::chrono::system_clock::now();
         auto tt      = std::chrono::system_clock::to_time_t(now);
-        auto* tm     = std::localtime(&tt);
+        struct tm tm_buf;
+        auto* tm     = localtime_r(&tt, &tm_buf);  // Thread-safe
         int  year    = tm->tm_year + 1900;
         int  month   = tm->tm_mon + 1;
 
@@ -59,7 +61,8 @@ private:
 
         auto now   = std::chrono::system_clock::now();
         auto tt    = std::chrono::system_clock::to_time_t(now);
-        auto* tm   = std::localtime(&tt);
+        struct tm tm_buf;
+        auto* tm   = localtime_r(&tt, &tm_buf);  // Thread-safe
         current_year_  = tm->tm_year + 1900;
         current_month_ = tm->tm_mon + 1;
 

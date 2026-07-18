@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Powerboard
+Comment=TUI Hardware & Power Monitor
+Comment[sr]=ТУИ монитор хардвера и потрошње струје
+Icon=utilities-system-monitor
+Exec=powerboard
+Terminal=true
+Categories=System;Monitor;
+Keywords=monitor;power;gpu;cpu;system;

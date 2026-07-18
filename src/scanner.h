@@ -7,24 +7,88 @@
 #include <filesystem>
 #include <chrono>
 #include <cmath>
+#include <thread>
+#include <cctype>
+#include <cerrno>
 #include <dirent.h>
 #include <sys/statvfs.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <signal.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include "types.h"
 
 namespace fs = std::filesystem;
 
 // --- SYSTEM TUNING PRIVILEGE MODULES ---
 inline std::string get_power_profile() {
-    FILE* p = popen("powerprofilesctl get 2>/dev/null", "r");
-    if (!p) return "balanced";
-    char buf[64];
+    int pipefd[2];
+    if (pipe(pipefd) == -1) return "balanced";
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return "balanced";
+    }
+
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDERR_FILENO);
+            close(null_fd);
+        }
+
+        execlp("powerprofilesctl", "powerprofilesctl", "get", nullptr);
+        _exit(1);
+    }
+
+    close(pipefd[1]);
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    if (flags >= 0) {
+        fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+    }
+
     std::string res;
-    if (fgets(buf, sizeof(buf), p)) res = buf;
-    pclose(p);
-    while (!res.empty() && isspace(res.back())) res.pop_back();
-    return res.empty() ? "balanced" : res;
+    char buf[64];
+    auto start = std::chrono::steady_clock::now();
+    const auto timeout = std::chrono::milliseconds(250);
+
+    while (true) {
+        auto elapsed = std::chrono::steady_clock::now() - start;
+        if (elapsed > timeout) break;
+
+        ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            res += buf;
+            if (res.find('\n') != std::string::npos) break;
+        } else if (n == 0) {
+            break;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    close(pipefd[0]);
+    int status = 0;
+    pid_t w = waitpid(pid, &status, WNOHANG);
+    if (w == 0) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+    }
+
+    while (!res.empty() && std::isspace(static_cast<unsigned char>(res.back()))) res.pop_back();
+    if (res == "balanced" || res == "performance" || res == "power-saver") return res;
+    return "balanced";
 }
 
 inline void set_power_profile(const std::string& profile) {
@@ -146,10 +210,11 @@ private:
         }
     }
 
-    DriveInfo get_drive_info(const std::string& mount_point) {
+    DriveInfo get_drive_info(const std::string& mount_point, const std::string& label = "") {
         struct statvfs stat;
         DriveInfo d;
         d.mount_point = mount_point;
+        d.label = label;
         if (statvfs(mount_point.c_str(), &stat) == 0) {
             double total = static_cast<double>(stat.f_blocks) * stat.f_frsize;
             double free = static_cast<double>(stat.f_bavail) * stat.f_frsize;
@@ -161,9 +226,35 @@ private:
         return d;
     }
 
+    std::string cached_cpu_model;
+
+    void read_cpu_model() {
+        std::ifstream f("/proc/cpuinfo");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.rfind("model name", 0) == 0) {
+                size_t colon = line.find(':');
+                if (colon != std::string::npos) {
+                    std::string model = line.substr(colon + 1);
+                    while (!model.empty() && std::isspace(static_cast<unsigned char>(model.front()))) model.erase(0, 1);
+                    // Trim marketing noise for a compact sidebar label
+                    for (const char* junk : {" with Radeon Graphics", "(R)", "(TM)", " CPU", " Processor"}) {
+                        size_t p;
+                        while ((p = model.find(junk)) != std::string::npos) model.erase(p, std::string(junk).size());
+                    }
+                    if (model.size() > 22) model = model.substr(0, 22);
+                    cached_cpu_model = model;
+                }
+                break;
+            }
+        }
+        if (cached_cpu_model.empty()) cached_cpu_model = "Unknown CPU";
+    }
+
 public:
     AdvancedHardwareScanner() {
         find_gpu_hwmon();
+        read_cpu_model();
     }
 
     void update_all_metrics(SystemMetrics& m, double dt_sec) {
@@ -370,6 +461,16 @@ public:
         last_disk_r = r_sectors; last_disk_w = w_sectors;
         disk_file.close();
 
+        // Load average + CPU model label
+        m.cpu_model = cached_cpu_model;
+        std::ifstream loadavg_file("/proc/loadavg");
+        double l1 = 0.0, l5 = 0.0;
+        if (loadavg_file >> l1 >> l5) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.2f / %.2f", l1, l5);
+            m.loadavg_str = buf;
+        }
+
         // Battery Percent
         double bat_percent = 80.0;
         m.battery_percent = 80.0;
@@ -380,23 +481,31 @@ public:
 
         // Active partitions querying
         m.drives.clear();
-        m.drives.push_back(get_drive_info("/"));
+        m.drives.push_back(get_drive_info("/", "root"));
         struct statvfs s_stat;
-        if (statvfs("/boot/efi", &s_stat) == 0) {
-            m.drives.push_back(get_drive_info("/boot/efi"));
-        }
-        if (statvfs("/mnt/bigdata", &s_stat) == 0) {
-            m.drives.push_back(get_drive_info("/mnt/bigdata"));
+        struct MountSpec { const char* path; const char* label; };
+        const MountSpec extra_mounts[] = {
+            { "/boot/efi", "efi" },
+            { "/mnt/bigdata", "bigdata" },
+            { "/run/media/dusan/DATA1", "DATA1" },
+            { "/mnt/usb-General_UDisk-0:0-part1", "USB 2T" },
+        };
+        for (const auto& mnt : extra_mounts) {
+            if (statvfs(mnt.path, &s_stat) == 0 && s_stat.f_blocks > 0) {
+                m.drives.push_back(get_drive_info(mnt.path, mnt.label));
+            }
         }
 
         // Process mapping matrix
         m.processes.clear();
+        m.proc_count = 0;
         DIR* dir = opendir("/proc");
         if (dir) {
             struct dirent* entry;
             while ((entry = readdir(dir))) {
                 if (entry->d_type == DT_DIR && isdigit(entry->d_name[0])) {
                     int pid = atoi(entry->d_name);
+                    m.proc_count++;
                     std::ifstream p_stat("/proc/" + std::to_string(pid) + "/stat");
                     std::string p_name; int p_pid;
                     if (p_stat >> p_pid >> p_name) {
