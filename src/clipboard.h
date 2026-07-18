@@ -6,10 +6,35 @@
 #include <sqlite3.h>
 #include <chrono>
 #include <thread>
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/wait.h>
 #include "types.h"
+
+// --- PLATFORM DETECTION ---
+#if defined(_WIN32) || defined(_WIN64)
+    #define PLATFORM_WINDOWS
+#elif defined(__APPLE__)
+    #define PLATFORM_MACOS
+#elif defined(__linux__)
+    #define PLATFORM_LINUX
+#else
+    #define PLATFORM_UNKNOWN
+#endif
+
+#ifdef PLATFORM_LINUX
+    #include <fcntl.h>
+    #include <unistd.h>
+    #include <sys/wait.h>
+#endif
+
+// --- CROSS-PLATFORM STUBS (Windows/macOS) ---
+#if defined(PLATFORM_WINDOWS) || defined(PLATFORM_MACOS) || defined(PLATFORM_UNKNOWN)
+
+inline std::string read_clipboard() { return ""; }
+inline void write_clipboard(const std::string& text) { (void)text; }
+
+#endif
+
+// --- LINUX CLIPBOARD (Wayland wl-paste/wl-copy) ---
+#ifdef PLATFORM_LINUX
 
 // Thread-safe clipboard read with timeout to prevent Wayland hangs
 inline std::string read_clipboard() {
@@ -93,6 +118,8 @@ inline void write_clipboard(const std::string& text) {
         pclose(pipe);
     }
 }
+
+#endif // PLATFORM_LINUX
 
 inline std::vector<ClipItem> get_clips(sqlite3* db) {
     std::vector<ClipItem> results;

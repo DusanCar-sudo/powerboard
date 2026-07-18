@@ -54,12 +54,30 @@ optimize_disks() {
 }
 
 # === CPU BALANCING & IDLE REDUCTION ===
+get_available_governors() {
+    cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors 2>/dev/null
+}
+
 optimize_cpu() {
     log "Optimizing CPU cores..."
 
-    # Set CPU governor to performance
+    # Detect available governors
+    local available
+    available=$(get_available_governors)
+    log "Available governors: $available"
+
+    # Pick best governor based on mode and availability
+    local governor="performance"
+    if $BATTERY_MODE; then
+        if [[ "$available" == *"powersave"* ]]; then
+            governor="powersave"
+        elif [[ "$available" == *"ondemand"* ]]; then
+            governor="ondemand"
+        fi
+    fi
+
     for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
-        echo performance > "$cpu" 2>/dev/null || true
+        echo "$governor" > "$cpu" 2>/dev/null || true
     done
 
     # Enable CPU frequency scaling
@@ -70,15 +88,23 @@ optimize_cpu() {
         systemctl restart irqbalance 2>/dev/null || irqbalance --oneshot
     fi
 
-    # Reduce C-state latency for faster wake
-    for cpu in /sys/devices/system/cpu/cpu*/cpuidle; do
-        echo 1 > "$cpu/state0/disable" 2>/dev/null || true
-    done
+    # C-state tuning: aggressive on battery, conservative when plugged
+    if $BATTERY_MODE; then
+        # Enable deep C-states for battery savings
+        for cpu in /sys/devices/system/cpu/cpu*/cpuidle/state?/disable; do
+            echo 0 > "$cpu" 2>/dev/null || true
+        done
+    else
+        # Reduce C-state latency for faster wake (plugged)
+        for cpu in /sys/devices/system/cpu/cpu*/cpuidle/state?/disable; do
+            echo 1 > "$cpu" 2>/dev/null || true
+        done
+    fi
 
     # Pin kernel threads to CPU0 to free others
-    echo 2 > /proc/sys/kernel/kthread_pid
+    echo 2 > /proc/sys/kernel/kthread_pid 2>/dev/null || true
 
-    log "CPU: performance governor, irqbalance rebalanced, C-states tuned"
+    log "CPU: $governor governor, irqbalance rebalanced, C-states tuned"
 }
 
 # === NETWORK & LATENCY ===
@@ -102,7 +128,10 @@ optimize_network() {
 main() {
     check_root
 
-    log "=== AURA SYSTEM OPTIMIZER ==="
+    local mode="PLUGGED IN (max performance)"
+    $BATTERY_MODE && mode="BATTERY (balanced)"
+
+    log "=== AURA SYSTEM OPTIMIZER [$mode] ==="
     optimize_ram
     optimize_disks
     optimize_cpu

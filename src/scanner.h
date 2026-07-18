@@ -10,18 +10,54 @@
 #include <thread>
 #include <cctype>
 #include <cerrno>
-#include <dirent.h>
-#include <sys/statvfs.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include "types.h"
 
 namespace fs = std::filesystem;
 
-// --- SYSTEM TUNING PRIVILEGE MODULES ---
+// --- PLATFORM DETECTION ---
+#if defined(_WIN32) || defined(_WIN64)
+    #define PLATFORM_WINDOWS
+#elif defined(__APPLE__)
+    #define PLATFORM_MACOS
+#elif defined(__linux__)
+    #define PLATFORM_LINUX
+#else
+    #define PLATFORM_UNKNOWN
+#endif
+
+// --- PLATFORM-SPECIFIC HEADERS ---
+#ifdef PLATFORM_LINUX
+    #include <dirent.h>
+    #include <sys/statvfs.h>
+    #include <sys/types.h>
+    #include <sys/wait.h>
+    #include <signal.h>
+    #include <fcntl.h>
+    #include <unistd.h>
+#endif
+
+#ifdef PLATFORM_MACOS
+    #include <sys/types.h>
+    #include <sys/sysctl.h>
+    #include <sys/mount.h>
+#endif
+
+// --- CROSS-PLATFORM STUBS (Windows/macOS) ---
+#if defined(PLATFORM_WINDOWS) || defined(PLATFORM_MACOS) || defined(PLATFORM_UNKNOWN)
+
+inline std::string get_power_profile() { return "balanced"; }
+inline void set_power_profile(const std::string& profile) { (void)profile; }
+inline bool get_cpu_boost() { return false; }
+inline bool set_cpu_boost_privileged(bool on) { (void)on; return false; }
+inline int get_swappiness() { return 60; }
+inline bool set_swappiness_privileged(int val) { (void)val; return false; }
+inline std::string run_balance_cores_privileged() { return "Not supported on this platform"; }
+inline bool run_drop_caches_privileged() { return false; }
+
+#endif
+
+// --- SYSTEM TUNING PRIVILEGE MODULES (Linux only) ---
+#ifdef PLATFORM_LINUX
 inline std::string get_power_profile() {
     int pipefd[2];
     if (pipe(pipefd) == -1) return "balanced";
@@ -161,6 +197,52 @@ inline bool run_drop_caches_privileged() {
     int status = std::system(cmd.c_str());
     return status == 0;
 }
+
+#endif // PLATFORM_LINUX
+
+// --- CROSS-PLATFORM STUB HARDWARE SCANNER (Windows/macOS) ---
+#if defined(PLATFORM_WINDOWS) || defined(PLATFORM_MACOS) || defined(PLATFORM_UNKNOWN)
+
+class AdvancedHardwareScanner {
+public:
+    AdvancedHardwareScanner() {}
+
+    void update_all_metrics(SystemMetrics& m, double dt_sec) {
+        (void)dt_sec;
+        // Return safe dummy values for non-Linux platforms
+        m.cpu_load = 0.0;
+        m.cpu_temp = 45.0;
+        m.cpu_freq = 2.4;
+        m.gpu_temp = 40.0;
+        m.gpu_load = 0.0;
+        m.current_watts = 15.0;
+        m.cumulative_kwh = 0.0;
+        m.accumulated_cost = 0.0;
+        m.total_ram = 16384;
+        m.free_ram = 8192;
+        m.used_ram = 8192;
+        m.total_swap = 2048;
+        m.free_swap = 2048;
+        m.used_swap = 0;
+        m.net_download_kb = 0.0;
+        m.net_upload_kb = 0.0;
+        m.disk_read_kb = 0.0;
+        m.disk_write_kb = 0.0;
+        m.battery_percent = 100.0;
+        m.uptime_str = "0h 0m";
+        m.cpu_model = "Unknown CPU";
+        m.loadavg_str = "0.00 / 0.00";
+        m.proc_count = 0;
+        m.core_loads.clear();
+        m.drives.clear();
+        m.processes.clear();
+    }
+};
+
+#endif
+
+// --- LINUX HARDWARE SCANNER ---
+#ifdef PLATFORM_LINUX
 
 // --- HARDWARE SCANNER ---
 class AdvancedHardwareScanner {
@@ -533,3 +615,5 @@ public:
         }
     }
 };
+
+#endif // PLATFORM_LINUX
